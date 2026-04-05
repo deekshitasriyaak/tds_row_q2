@@ -90,6 +90,12 @@ CRITICAL RULES:
     value_range = {k: v for k, v in value_range.items() if k in numeric_cols}
     result["value_range"] = value_range
 
+    # correlation must be [] when no numeric columns exist
+    if len(numeric_cols) == 0:
+        result["correlation"] = []
+        for key in ("mean", "std", "variance", "min", "max", "median", "mode", "range"):
+            result[key] = {}
+
     return result
 
 
