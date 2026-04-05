@@ -1,5 +1,4 @@
 fastapi
 uvicorn[standard]
-openai
+groq
 python-multipart
-httpx
