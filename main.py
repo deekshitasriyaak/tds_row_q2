@@ -32,31 +32,35 @@ async def transcribe_audio(audio_base64: str) -> str:
 
 
 def parse_dataset_from_transcript(transcript: str) -> dict:
-    system_prompt = """You are a data analyst. The user will provide a transcript (possibly in Korean) describing a dataset.
-Extract the dataset statistics and return ONLY a valid JSON object with these exact keys:
+    system_prompt = """You are a data analyst. The user gives a transcript (possibly Korean) describing a dataset.
+
+Return ONLY a valid JSON object. No markdown, no code blocks.
+
+Schema:
 {
-  "rows": <integer, total number of rows>,
-  "columns": [<list of all column name strings>],
-  "mean": {<numeric_col>: <float>, ...},
-  "std": {<numeric_col>: <float>, ...},
-  "variance": {<numeric_col>: <float>, ...},
-  "min": {<numeric_col>: <float>, ...},
-  "max": {<numeric_col>: <float>, ...},
-  "median": {<numeric_col>: <float>, ...},
-  "mode": {<numeric_col>: <float>, ...},
-  "range": {<numeric_col>: <float>, ...},
-  "allowed_values": {<col>: [<list>] for categorical cols, null for numeric cols},
-  "value_range": {<col>: [<min>, <max>] for numeric cols, null for categorical cols},
-  "correlation": [[<float>, ...], ...]
+  "rows": <int>,
+  "columns": [<all column names in order>],
+  "mean":     {<numeric_col>: <float>},
+  "std":      {<numeric_col>: <float>},
+  "variance": {<numeric_col>: <float>},
+  "min":      {<numeric_col>: <float>},
+  "max":      {<numeric_col>: <float>},
+  "median":   {<numeric_col>: <float>},
+  "mode":     {<numeric_col>: <float>},
+  "range":    {<numeric_col>: <float>},
+  "allowed_values": {<categorical_col>: [<values>]},
+  "value_range":    {<numeric_col>: [<min>, <max>]},
+  "correlation": [[<float>,...],...]
 }
 
-Rules:
-- mean/std/variance/min/max/median/mode/range: only numeric columns
-- allowed_values: list of valid values for categorical columns, null for numeric
-- value_range: [min, max] for numeric columns, null for categorical
-- correlation: 2D matrix of Pearson correlation coefficients between numeric columns (same order as they appear in columns list)
-- range = max - min for each numeric column
-- Return ONLY raw JSON, no markdown, no code blocks, no explanation"""
+CRITICAL RULES:
+- mean/std/variance/min/max/median/mode/range/value_range: ONLY numeric columns. Never include categorical columns here.
+- allowed_values: ONLY categorical columns (non-numeric, e.g. gender, grade, type). If NO categorical columns exist, return "allowed_values": {}.
+- Do NOT put numeric columns in allowed_values. Do NOT put categorical columns in mean/std/etc.
+- value_range: [min, max] pair for each numeric column only.
+- correlation: 2D matrix (list of lists) of Pearson correlations among numeric columns, in same order as they appear in "columns".
+- range = max - min per numeric column.
+- variance = std^2."""
 
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -69,7 +73,24 @@ Rules:
     )
 
     text = response.choices[0].message.content
-    return json.loads(text)
+    result = json.loads(text)
+
+    # --- Post-processing safety net ---
+    numeric_cols = list(result.get("mean", {}).keys())
+    all_cols = result.get("columns", [])
+    categorical_cols = [c for c in all_cols if c not in numeric_cols]
+
+    # allowed_values: only categorical cols
+    allowed_values = result.get("allowed_values", {})
+    allowed_values = {k: v for k, v in allowed_values.items() if k in categorical_cols}
+    result["allowed_values"] = allowed_values
+
+    # value_range: only numeric cols
+    value_range = result.get("value_range", {})
+    value_range = {k: v for k, v in value_range.items() if k in numeric_cols}
+    result["value_range"] = value_range
+
+    return result
 
 
 @app.post("/")
@@ -85,7 +106,8 @@ async def analyze_audio(request: Request):
 
         print(f"[{audio_id}] Parsing stats...")
         stats = parse_dataset_from_transcript(transcript)
-        print(f"[{audio_id}] Done. rows={stats.get('rows')}, cols={stats.get('columns')}")
+        print(f"[{audio_id}] allowed_values={stats.get('allowed_values')}")
+        print(f"[{audio_id}] value_range keys={list(stats.get('value_range', {}).keys())}")
 
         return JSONResponse(content=stats)
 
